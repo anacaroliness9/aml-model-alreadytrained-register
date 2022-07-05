@@ -1,0 +1,584 @@
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "source": [
+        "# Model Registry and Deploy\n",
+        "This notebook represents how to deploy a model, already trained in other development platform, with Azure Machine Learning\n"
+      ],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "## Artifactis Gathering\n",
+        "First, you need get all necessary artifacts to deploy your model:\n",
+        "To deploy a model, you need the following:\n",
+        "- **Serialized Model** (pkl, xgb, onnx...)\n",
+        "- **Libraries Environment**: Source code dependencies, which includes the package dependencies required to run the model. (conda.yml or requirements.txt)\n",
+        "- **Entry script** (score.py): This script accepts requests, scores the requests by using the model, and returns the results.\n"
+      ],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "from azureml.core import Workspace\n",
+        "ws = Workspace.from_config()"
+      ],
+      "outputs": [],
+      "execution_count": 2,
+      "metadata": {
+        "jupyter": {
+          "source_hidden": false,
+          "outputs_hidden": false
+        },
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### Serialized Model\n",
+        "The serialized model we have in this lab is the following file: diabetes_model.pkl"
+      ],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### Library Environments\n",
+        "- Reference: [https://docs.microsoft.com/en-us/azure/machine-learning/how-to-use-environments#create-an-environment](https://docs.microsoft.com/en-us/azure/machine-learning/how-to-use-environments#create-an-environment)"
+      ],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "from azureml.core.environment import Environment\n",
+        "\n",
+        "# From a Conda specification file\n",
+        "myenv = Environment.from_conda_specification(name = \"myenv-diabetes\",\n",
+        "                                             file_path = \"model_artifacts/diabetes_env.yml\")\n",
+        "\n",
+        "# From a pip requirements file\n",
+        "#myenv = Environment.from_pip_requirements(name = \"myenv\", file_path = \"path-to-pip-requirements-file\")      \n",
+        "\n",
+        "#Register my env in my workspace\n",
+        "myenv.register(workspace=ws)"
+      ],
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "execution_count": 17,
+          "data": {
+            "text/plain": "{\n    \"databricks\": {\n        \"eggLibraries\": [],\n        \"jarLibraries\": [],\n        \"mavenLibraries\": [],\n        \"pypiLibraries\": [],\n        \"rcranLibraries\": []\n    },\n    \"docker\": {\n        \"arguments\": [],\n        \"baseDockerfile\": null,\n        \"baseImage\": \"mcr.microsoft.com/azureml/openmpi3.1.2-ubuntu18.04:20220314.v1\",\n        \"baseImageRegistry\": {\n            \"address\": null,\n            \"password\": null,\n            \"registryIdentity\": null,\n            \"username\": null\n        },\n        \"enabled\": false,\n        \"platform\": {\n            \"architecture\": \"amd64\",\n            \"os\": \"Linux\"\n        },\n        \"sharedVolumes\": true,\n        \"shmSize\": null\n    },\n    \"environmentVariables\": {\n        \"EXAMPLE_ENV_VAR\": \"EXAMPLE_VALUE\"\n    },\n    \"inferencingStackVersion\": null,\n    \"name\": \"myenv-diabetes\",\n    \"python\": {\n        \"baseCondaEnvironment\": null,\n        \"condaDependencies\": {\n            \"channels\": [\n                \"anaconda\",\n                \"conda-forge\"\n            ],\n            \"dependencies\": [\n                \"python=3.6.2\",\n                {\n                    \"pip\": [\n                        \"azureml-defaults\"\n                    ]\n                },\n                \"scikit-learn\"\n            ],\n            \"name\": \"project_environment\"\n        },\n        \"condaDependenciesFile\": null,\n        \"interpreterPath\": \"python\",\n        \"userManagedDependencies\": false\n    },\n    \"r\": null,\n    \"spark\": {\n        \"packages\": [],\n        \"precachePackages\": true,\n        \"repositories\": []\n    },\n    \"version\": \"1\"\n}"
+          },
+          "metadata": {}
+        }
+      ],
+      "execution_count": 17,
+      "metadata": {
+        "jupyter": {
+          "source_hidden": false,
+          "outputs_hidden": false
+        },
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### Entry Script\n",
+        "- Example: [https://github.com/Azure/azureml-examples/blob/main/cli/endpoints/online/model-1/onlinescoring/score.py](https://github.com/Azure/azureml-examples/blob/main/cli/endpoints/online/model-1/onlinescoring/score.py)\n",
+        "We already have our score.py (score_diabetes.py), the following is just the test of this code locally."
+      ],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import json\n",
+        "import joblib\n",
+        "import numpy as np\n",
+        "from azureml.core.model import Model\n",
+        "\n",
+        "# Called when the service is loaded\n",
+        "def init():\n",
+        "    global model\n",
+        "    # Get the path to the deployed model file and load it\n",
+        "    #model_path = os.path.join(Model.get_model_path('diabetes_model'), 'diabetes_model.pkl')\n",
+        "    model_path = \"model_artifacts/diabetes_model.pkl\"\n",
+        "    model = joblib.load(model_path)\n",
+        "\n",
+        "# Called when a request is received\n",
+        "def run(raw_data):\n",
+        "    # Get the input data as a numpy array\n",
+        "    data = np.array(json.loads(raw_data)['data'])\n",
+        "    # Get a prediction from the model\n",
+        "    predictions = model.predict(data)\n",
+        "    # Get the corresponding classname for each prediction (0 or 1)\n",
+        "    classnames = ['not-diabetic', 'diabetic']\n",
+        "    predicted_classes = []\n",
+        "    for prediction in predictions:\n",
+        "        predicted_classes.append(classnames[prediction])\n",
+        "    # Return the predictions as JSON\n",
+        "    return json.dumps(predicted_classes)\n"
+      ],
+      "outputs": [],
+      "execution_count": 11,
+      "metadata": {
+        "jupyter": {
+          "source_hidden": false,
+          "outputs_hidden": false
+        },
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "init()"
+      ],
+      "outputs": [],
+      "execution_count": 12,
+      "metadata": {
+        "jupyter": {
+          "source_hidden": false,
+          "outputs_hidden": false
+        },
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "input_data = '{\"data\": [[2, 180, 74, 24, 21, 23.9091702, 1.488172308, 22], [0, 148, 58, 11, 179, 39.19207553, 0.160829008, 45]]}'\n",
+        "run(input_data)"
+      ],
+      "outputs": [
+        {
+          "output_type": "execute_result",
+          "execution_count": 13,
+          "data": {
+            "text/plain": "'[\"diabetic\", \"not-diabetic\"]'"
+          },
+          "metadata": {}
+        }
+      ],
+      "execution_count": 13,
+      "metadata": {
+        "jupyter": {
+          "source_hidden": false,
+          "outputs_hidden": false
+        },
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "## Deploy the Model\n",
+        "To deploy the model we need first register and then deploy"
+      ],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### Register a model\n",
+        "Now let's register the model to then deploy it."
+      ],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "from azureml.core import Model\n",
+        "import sklearn\n",
+        "\n",
+        "# Register the model\n",
+        "model_path = \"model_artifacts\"\n",
+        "model_azure = Model.register(model_path=model_path, \n",
+        "               workspace = ws,\n",
+        "               model_name='diabetes_model_testeltm',\n",
+        "               tags={'Training context':'Inline Training', 'area': 'diabetes', 'type': 'classification', 'algorithm' : 'DecisionTreeClassifier'},\n",
+        "               properties={'AUC': '0.87', \n",
+        "                   'Accuracy': '0.91'},\n",
+        "                model_framework = Model.Framework.SCIKITLEARN,\n",
+        "                model_framework_version = sklearn.__version__,\n",
+        "                description='Decision tree model to predict diabetes.')"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "Registering model diabetes_model_testeltm\n"
+        }
+      ],
+      "execution_count": 15,
+      "metadata": {
+        "jupyter": {
+          "source_hidden": false,
+          "outputs_hidden": false
+        },
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "model = ws.models['diabetes_model']\n",
+        "print(model.name, 'version', model.version)"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "diabetes_model version 34\n"
+        }
+      ],
+      "execution_count": 16,
+      "metadata": {
+        "jupyter": {
+          "source_hidden": false,
+          "outputs_hidden": false
+        },
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "### Deployment configuration\n",
+        "\n",
+        "Now you're ready to deploy. We'll deploy the container a service named **diabetes-service**. The deployment process includes the following steps:\n",
+        "\n",
+        "1. Define an inference configuration, which includes the scoring and environment files required to load and use the model.\n",
+        "2. Define a deployment configuration that defines the execution environment in which the service will be hosted. In this case, an Azure Container Instance.\n",
+        "3. Deploy the model as a web service.\n",
+        "4. Verify the status of the deployed service.\n",
+        "\n",
+        "> **More Information**: For more details about model deployment, and options for target execution environments, see the [documentation](https://docs.microsoft.com/azure/machine-learning/how-to-deploy-and-where).\n",
+        "\n",
+        "Deployment will take some time as it first runs a process to create a container image, and then runs a process to create a web service based on the image. When deployment has completed successfully, you'll see a status of **Healthy**.\n",
+        "\n",
+        "At this moment we will define the infrastructure we will use do deploy our model.\n",
+        "- ACI (Azure Container Instance): Recommended in QA environments\n",
+        "- AKS (Azure Container Registry): Recommended in Prod environments\n",
+        "\n"
+      ],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "#### Deploy on ACI"
+      ],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "from azureml.core.webservice import AciWebservice\n",
+        "from azureml.core.model import InferenceConfig\n",
+        "\n",
+        "# Configure the scoring environment\n",
+        "inference_config = InferenceConfig(entry_script='model_artifacts/score_diabetes.py',\n",
+        "                                   environment=myenv.get(ws,'myenv-diabetes'))\n",
+        "\n",
+        "deployment_config = AciWebservice.deploy_configuration(cpu_cores = 2, memory_gb = 2, auth_enabled=True)\n",
+        "\n",
+        "service_name = \"diabetes-qa-endpoint\"\n",
+        "\n",
+        "service = Model.deploy(ws, service_name, [model], inference_config, deployment_config)\n",
+        "\n",
+        "service.wait_for_deployment(True)\n",
+        "print(service.state)"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "Tips: You can try get_logs(): https://aka.ms/debugimage#dockerlog or local deployment: https://aka.ms/debugimage#debug-locally to debug if deployment takes longer than 10 minutes.\nRunning\n2022-07-05 20:46:54+00:00 Creating Container Registry if not exists.\n2022-07-05 20:46:55+00:00 Registering the environment.\n2022-07-05 20:46:56+00:00 Use the existing image.\n2022-07-05 20:46:56+00:00 Generating deployment configuration.\n2022-07-05 20:46:57+00:00 Submitting deployment to compute.\n2022-07-05 20:47:01+00:00 Checking the status of deployment diabetes-qa-endpoint..\n2022-07-05 20:49:37+00:00 Checking the status of inference endpoint diabetes-qa-endpoint.\nSucceeded\nACI service creation operation finished, operation \"Succeeded\"\nHealthy\n"
+        }
+      ],
+      "execution_count": 21,
+      "metadata": {
+        "jupyter": {
+          "source_hidden": false,
+          "outputs_hidden": false
+        },
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "Hopefully, the deployment has been successful and you can see a status of **Healthy**. If not, you can use the following code to get the service logs to help you troubleshoot."
+      ],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "print(service.get_logs())\n",
+        "\n",
+        "# If you need to make a change and redeploy, you may need to delete unhealthy service using the following code:\n",
+        "#service.delete()"
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "2022-07-05T20:49:31,063491700+00:00 - iot-server/run \n2022-07-05T20:49:31,072232700+00:00 - gunicorn/run \nDynamic Python package installation is disabled.\nStarting HTTP server\n2022-07-05T20:49:31,072485900+00:00 - rsyslog/run \n2022-07-05T20:49:31,083858600+00:00 - nginx/run \nEdgeHubConnectionString and IOTEDGE_IOTHUBHOSTNAME are not set. Exiting...\n2022-07-05T20:49:31,270525800+00:00 - iot-server/finish 1 0\n2022-07-05T20:49:31,293546000+00:00 - Exit code 1 is normal. Not restarting iot-server.\nStarting gunicorn 20.1.0\nListening at: http://127.0.0.1:31311 (74)\nUsing worker: sync\nworker timeout is set to 300\nBooting worker with pid: 102\nSPARK_HOME not set. Skipping PySpark Initialization.\nInitializing logger\n2022-07-05 20:49:34,783 | root | INFO | Starting up app insights client\nlogging socket was found. logging is available.\nlogging socket was found. logging is available.\n2022-07-05 20:49:34,783 | root | INFO | Starting up request id generator\n2022-07-05 20:49:34,784 | root | INFO | Starting up app insight hooks\n2022-07-05 20:49:34,784 | root | INFO | Invoking user's init function\nno request id,/azureml-envs/azureml_4b824bcb98517d791c41923f24d65461/lib/python3.6/site-packages/sklearn/base.py:315: UserWarning: Trying to unpickle estimator DecisionTreeClassifier from version 0.22.2.post1 when using version 0.24.2. This might lead to breaking code or invalid results. Use at your own risk.\n  UserWarning)\n\n2022-07-05 20:49:35,457 | root | INFO | Users's init has completed successfully\n/azureml-envs/azureml_4b824bcb98517d791c41923f24d65461/lib/python3.6/site-packages/paramiko/transport.py:33: CryptographyDeprecationWarning: Python 3.6 is no longer supported by the Python core team. Therefore, support for it is deprecated in cryptography and will be removed in a future release.\n  from cryptography.hazmat.backends import default_backend\n/azureml-envs/azureml_4b824bcb98517d791c41923f24d65461/lib/python3.6/site-packages/sklearn/base.py:315: UserWarning: Trying to unpickle estimator DecisionTreeClassifier from version 0.22.2.post1 when using version 0.24.2. This might lead to breaking code or invalid results. Use at your own risk.\n  UserWarning)\n2022-07-05 20:49:35,462 | root | INFO | Skipping middleware: dbg_model_info as it's not enabled.\n2022-07-05 20:49:35,462 | root | INFO | Skipping middleware: dbg_resource_usage as it's not enabled.\n2022-07-05 20:49:35,463 | root | INFO | Scoring timeout is found from os.environ: 60000 ms\n2022-07-05 20:51:55,950 | root | INFO | Swagger file not present\n2022-07-05 20:51:55,951 | root | INFO | 404\n127.0.0.1 - - [05/Jul/2022:20:51:55 +0000] \"GET /swagger.json HTTP/1.0\" 404 19 \"-\" \"Go-http-client/1.1\"\n2022-07-05 20:51:58,439 | root | INFO | Swagger file not present\n2022-07-05 20:51:58,441 | root | INFO | 404\n127.0.0.1 - - [05/Jul/2022:20:51:58 +0000] \"GET /swagger.json HTTP/1.0\" 404 19 \"-\" \"Go-http-client/1.1\"\n\n"
+        }
+      ],
+      "execution_count": 22,
+      "metadata": {
+        "jupyter": {
+          "source_hidden": false,
+          "outputs_hidden": false
+        },
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "## Use the web service\n",
+        "\n",
+        "With the service deployed, now you can consume it from a HTTP request, sending the patient data in JSON format, and receive back the predicted class(es)."
+      ],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [
+        "import urllib.request\n",
+        "import json\n",
+        "import os\n",
+        "import ssl\n",
+        "\n",
+        "\n",
+        "# Request data goes here\n",
+        "x_new = [[2,180,74,24,21,23.9091702,1.488172308,22],\n",
+        "         [0,148,58,11,179,39.19207553,0.160829008,45]]\n",
+        "print ('Patients: {}'.format(x_new))\n",
+        "\n",
+        "# Convert the array to a serializable list in a JSON document\n",
+        "input_json = json.dumps({\"data\": x_new})\n",
+        "\n",
+        "body = str.encode(input_json)\n",
+        "\n",
+        "url = 'http://12feb218-28cb-4a18-b03b-ddc1d71eac8c.eastus.azurecontainer.io/score'\n",
+        "#api_key = '' # Replace this with the API key for the web service , 'Authorization':('Bearer '+ api_key)\n",
+        "headers = {'Content-Type':'application/json'}\n",
+        "\n",
+        "req = urllib.request.Request(url, body, headers)\n",
+        "\n",
+        "try:\n",
+        "    response = urllib.request.urlopen(req)\n",
+        "\n",
+        "    result = response.read()\n",
+        "    print(result)\n",
+        "except urllib.error.HTTPError as error:\n",
+        "    print(\"The request failed with status code: \" + str(error.code))\n",
+        "\n",
+        "    # Print the headers - they include the requert ID and the timestamp, which are useful for debugging the failure\n",
+        "    print(error.info())\n",
+        "    print(error.read())\n",
+        "    "
+      ],
+      "outputs": [
+        {
+          "output_type": "stream",
+          "name": "stdout",
+          "text": "Patients: [[2, 180, 74, 24, 21, 23.9091702, 1.488172308, 22], [0, 148, 58, 11, 179, 39.19207553, 0.160829008, 45]]\nb'\"[\\\\\"diabetic\\\\\", \\\\\"not-diabetic\\\\\"]\"'\n"
+        }
+      ],
+      "execution_count": 24,
+      "metadata": {
+        "jupyter": {
+          "source_hidden": false,
+          "outputs_hidden": false
+        },
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "markdown",
+      "source": [
+        "#### Deploy on AKS"
+      ],
+      "metadata": {
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    },
+    {
+      "cell_type": "code",
+      "source": [],
+      "outputs": [],
+      "execution_count": null,
+      "metadata": {
+        "jupyter": {
+          "source_hidden": false,
+          "outputs_hidden": false
+        },
+        "nteract": {
+          "transient": {
+            "deleting": false
+          }
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "kernelspec": {
+      "name": "python38-azureml",
+      "language": "python",
+      "display_name": "Python 3.8 - AzureML"
+    },
+    "language_info": {
+      "name": "python",
+      "version": "3.8.5",
+      "mimetype": "text/x-python",
+      "codemirror_mode": {
+        "name": "ipython",
+        "version": 3
+      },
+      "pygments_lexer": "ipython3",
+      "nbconvert_exporter": "python",
+      "file_extension": ".py"
+    },
+    "kernel_info": {
+      "name": "python38-azureml"
+    },
+    "nteract": {
+      "version": "nteract-front-end@1.0.0"
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 0
+}
